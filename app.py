@@ -1,6 +1,6 @@
 import os
 from flask import Flask, jsonify, request, render_template_string, redirect, session
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 app = Flask(__name__)
 
@@ -11,10 +11,13 @@ app.permanent_session_lifetime = timedelta(minutes=60)
 def require_login():
     return session.get("logged_in", False)
 
+def require_manager():
+    return session.get("role") == "Manager"
+
 # ================= STAFF =================
 STAFF_PINS = {
-    "1357": "Manager",
-    "2468": "Staff"
+    "1234": "Manager",
+    "0000": "Staff"
 }
 
 # ================= MENU =================
@@ -40,7 +43,9 @@ items = {
     }
 }
 
+# ================= STATE =================
 state = {"cash": 0.0, "card": 0.0}
+reports = []
 
 # ================= LOGIN =================
 LOGIN_HTML = """
@@ -57,7 +62,7 @@ LOGIN_HTML = """
 </html>
 """
 
-# ================= MAIN POS =================
+# ================= POS =================
 POS_HTML = """
 <!DOCTYPE html>
 <html>
@@ -66,24 +71,16 @@ POS_HTML = """
 <style>
 body{margin:0;font-family:Arial;background:#111;color:white;}
 .top{padding:10px;background:#1c1c1c;color:lightgreen;position:sticky;top:0;}
-
 .container{display:flex;height:100vh;}
-
 .left{width:25%;padding:10px;overflow:auto;background:#1a1a1a;}
 .center{width:50%;padding:10px;display:flex;flex-direction:column;}
 .right{width:25%;padding:10px;display:flex;flex-direction:column;}
-
 .tabs{display:flex;flex-wrap:wrap;}
 .tab{flex:1;margin:5px;padding:10px;background:#2ecc71;border:none;border-radius:10px;color:white;}
-
 .items{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px;}
-
 .item{background:#333;padding:18px;border-radius:10px;text-align:center;}
-
 .noteGrid{display:grid;grid-template-columns:repeat(2,1fr);gap:5px;}
-
 button{padding:12px;margin:5px 0;border:none;border-radius:10px;font-size:16px;}
-
 .cash{background:#ff8c00;color:white;}
 .card{background:#1e90ff;color:white;}
 .exact{background:#87cefa;}
@@ -122,7 +119,7 @@ button{padding:12px;margin:5px 0;border:none;border-radius:10px;font-size:16px;}
 <button class="clear" onclick="clearOrder()">CLEAR</button>
 
 <br>
-<button class="clear" onclick="resetDay()">END DAY</button>
+<button class="clear" onclick="endDay()">END DAY</button>
 
 </div>
 
@@ -218,8 +215,17 @@ function pay(method){
     }).then(()=>clearOrder());
 }
 
-function resetDay(){
-    fetch("/reset",{method:"POST"});
+function endDay(){
+    fetch("/totals")
+    .then(r=>r.json())
+    .then(d=>{
+        let confirmReset = confirm(
+            `END OF DAY REPORT\\n\\nCash: £${d.cash.toFixed(2)}\\nCard: £${d.card.toFixed(2)}\\nTotal: £${d.total.toFixed(2)}\\n\\nConfirm reset?`
+        );
+        if(confirmReset){
+            fetch("/reset",{method:"POST"});
+        }
+    });
 }
 
 renderTabs();
@@ -242,8 +248,10 @@ def index():
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method == "POST":
-        if request.form.get("pin") in STAFF_PINS:
+        pin = request.form.get("pin")
+        if pin in STAFF_PINS:
             session["logged_in"] = True
+            session["role"] = STAFF_PINS[pin]
             session.permanent = True
             return redirect("/")
         return "Wrong PIN"
@@ -268,8 +276,15 @@ def pay():
 
 @app.route("/reset", methods=["POST"])
 def reset():
-    if not require_login():
+    if not require_login() or not require_manager():
         return "unauthorised", 403
+
+    reports.append({
+        "time": str(datetime.now()),
+        "cash": state["cash"],
+        "card": state["card"],
+        "total": state["cash"] + state["card"]
+    })
 
     state["cash"]=0
     state["card"]=0
@@ -285,6 +300,10 @@ def totals():
         "card":state["card"],
         "total":state["cash"]+state["card"]
     })
+
+@app.route("/reports")
+def view_reports():
+    return jsonify(reports)
 
 # ================= RUN =================
 if __name__ == "__main__":
